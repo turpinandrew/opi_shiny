@@ -25,7 +25,7 @@ static_last_time_called <- as.numeric(Sys.time())
     #   (a) send a MSG_TEST_ERROR on ShinyReceiver and 
     #   (b) use stop() to throw the problem back to the GUI
     #
-test_static <- future({ 
+test_static <- future({
 require(OPI)
 source('test_state.r')
 set.seed(as.numeric(rev(as.character(static_last_time_called))))
@@ -56,13 +56,13 @@ if (!chooseOPI(machine)) {
     # opiInitialise in the usual way, signalling start and end with 
     # MSG_INITIALISE_STATE messages on ShinyReceiver so GUI knows 
     # what is happening.
-ShinyReceiver$push(MSG_INITIALISE_STATE, "0")
+ShinyReceiver$push(MSG_INITIALISE_STATE, RUN_STOPPED)
 res <- opiInitialise()
 if (!is.null(res)) {
     ShinyReceiver$push(MSG_TEST_ERROR, "opiInitialise failed")
     stop('opiInitialise failed')
 }
-ShinyReceiver$push(MSG_INITIALISE_STATE, "1")
+ShinyReceiver$push(MSG_INITIALISE_STATE, RUN_WAIT_FOR_INIT)
 
     # Test needs to wait for GUI to give the green light as a message on ShinySender.
     # Note that we could get a variety of states from GUI

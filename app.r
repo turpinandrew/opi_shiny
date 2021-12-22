@@ -24,10 +24,11 @@
 #
 require(txtq)
 require(shiny)
+require(shinyjs)
 require(shinyWidgets)
 require(promises)
-require(future.callr)
-plan(callr)
+require(future)
+plan(multisession)
 
 source('test_state.r')
 
@@ -41,6 +42,8 @@ ShinyReceiver <- txtq(tempfile())  # Messages from test to GUI
 # The UI is a simple sidebarLayout. Add whatever you like!
 #
 ui <- fluidPage(
+    useShinyjs(),
+
     uiOutput("css_style"),
 
     titlePanel("Basic test framework"),
@@ -51,7 +54,7 @@ ui <- fluidPage(
                 column(4, sliderTextInput("speed", "Test Speed:", choices=SPEEDS))
             ),
 
-            radioButtons('test_choice', "Test Choice", width = "100%", choices = c("Center", "Peroph")),
+            radioButtons('test_choice', "Test Choice", width = "100%", choices = c("Center", "Periph"), inline=TRUE),
 
             fluidRow(
                 column(8, actionButton('run', 'Initialise machine')),
@@ -109,12 +112,12 @@ server <- function(input, output, session) {
 
                 # Set up variables that the test is expecting to exist in its 'globals' list
             vf <- isolate(rvs$vf)
-            vf <- cbind(vf, TT=30)
+            #vf <- cbind(vf, TT=30)
+            vf$TT<-30 # IMF question to AT: why not like this?
             machine <- "SimHenson"
             size <- 0.43
             fpr <- 0.01
             fnr <- 0.01
-
             source('static.r', local=TRUE)  # defines test_static <- future(... )
 
             rvs$run_state <- RUN_WAIT_FOR_INIT
@@ -139,19 +142,26 @@ server <- function(input, output, session) {
     observeEvent(rvs$run_state, {
         ShinySender$push(title=MSG_STATE, rvs$run_state)
 
-        if (rvs$run_state == RUN_STOPPED)      updateActionButton(session, "run", "Initialise machine") 
-        if (rvs$run_state == RUN_WAIT_FOR_INIT)updateActionButton(session, "run", "Waiting...") 
-        if (rvs$run_state == RUN_START_PAUSE)  updateActionButton(session, "run", "Start test") 
-        if (rvs$run_state == RUN_RUNNING)      updateActionButton(session, "run", "Pause Test") 
-        if (rvs$run_state == RUN_PAUSE)        updateActionButton(session, "run", "Continue Test") 
-        if (rvs$run_state == RUN_FINALISING)   updateActionButton(session, "run", "Waiting...") 
+        if (rvs$run_state == RUN_STOPPED)       updateActionButton(session, "run", "Initialise machine")
+        if (rvs$run_state == RUN_WAIT_FOR_INIT) updateActionButton(session, "run", "Waiting...")
+        if (rvs$run_state == RUN_START_PAUSE)   updateActionButton(session, "run", "Start test")
+        if (rvs$run_state == RUN_RUNNING)       updateActionButton(session, "run", "Pause Test")
+        if (rvs$run_state == RUN_PAUSE)         updateActionButton(session, "run", "Continue Test")
+        if (rvs$run_state == RUN_FINALISING)    updateActionButton(session, "run", "Waiting...")
 
-        if (rvs$run_state == RUN_STOPPED)      rvs$status <- "Ready to initialise"
-        if (rvs$run_state == RUN_WAIT_FOR_INIT)rvs$status <- "Initialising machine, please wait"
-        if (rvs$run_state == RUN_START_PAUSE)  rvs$status <- "Ready to start test"
-        if (rvs$run_state == RUN_RUNNING)      rvs$status <- "Running"
-        if (rvs$run_state == RUN_PAUSE)        rvs$status <- "Paused"
-        if (rvs$run_state == RUN_FINALISING)   rvs$status <- "Finalising results"
+        if (rvs$run_state == RUN_STOPPED)       rvs$status <- "Ready to initialise"
+        if (rvs$run_state == RUN_WAIT_FOR_INIT) rvs$status <- "Initialising machine, please wait"
+        if (rvs$run_state == RUN_START_PAUSE)   rvs$status <- "Ready to start test"
+        if (rvs$run_state == RUN_RUNNING)       rvs$status <- "Running"
+        if (rvs$run_state == RUN_PAUSE)         rvs$status <- "Paused"
+        if (rvs$run_state == RUN_FINALISING)    rvs$status <- "Finalising results"
+
+        if (rvs$run_state == RUN_STOPPED)       enable("test_choice")
+        if (rvs$run_state == RUN_WAIT_FOR_INIT) enable("test_choice")
+        if (rvs$run_state == RUN_START_PAUSE)   enable("test_choice")
+        if (rvs$run_state == RUN_RUNNING)       disable("test_choice")
+        if (rvs$run_state == RUN_PAUSE)         disable("test_choice")
+        if (rvs$run_state == RUN_FINALISING)    disable("test_choice")
     })
 
     #

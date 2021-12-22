@@ -52,7 +52,7 @@ get_from_txtq <- function(toget, q, block) {
             
                 # assign variables
             for (i_tit in which(!is.na(row_nums)))
-                assign(toget[[i_tit]][[1]], d$message[[row_nums[[i_tit]]]], env=parent.frame())
+                assign(toget[[i_tit]][[1]], d$message[[row_nums[[i_tit]]]], envir=parent.frame())
             
             done <- row_nums[!is.na(row_nums)]
             

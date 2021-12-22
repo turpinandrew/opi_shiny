@@ -8,7 +8,7 @@ require(OPI)
 require(txtq)
 require(promises)
 require(future)
-plan(multiprocess)
+plan(multisession)
 source('test_state.r')
 
 zip2 <- function(...) unlist(mapply(list, ..., SIMPLIFY=FALSE), recursive=FALSE)
