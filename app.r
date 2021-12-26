@@ -29,8 +29,10 @@ require(shinyWidgets)
 require(promises)
 require(future)
 plan(multisession)
+onStop(function() plan(sequential))
 
-source('test_state.r')
+source('test_state.r', local = TRUE)
+kill_state <- NULL
 
 # plotting area
 VF_SIZE <- 500 # pixels
@@ -112,8 +114,7 @@ server <- function(input, output, session) {
 
                 # Set up variables that the test is expecting to exist in its 'globals' list
             vf <- isolate(rvs$vf)
-            #vf <- cbind(vf, TT=30)
-            vf$TT<-30 # IMF question to AT: why not like this?
+            vf$TT<-30
             machine <- "SimHenson"
             size <- 0.43
             fpr <- 0.01
@@ -359,6 +360,8 @@ server <- function(input, output, session) {
     # ISI slider
     #
     observeEvent(input$speed,{ ShinySender$push(MSG_SPEED, input$speed) })
+    # stop server
+    onSessionEnded(function() ShinySender$push(MSG_STATE, RUN_STOPPED))
 }
 
 shinyApp(ui=ui, server = server)

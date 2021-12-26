@@ -26,7 +26,6 @@ static_last_time_called <- as.numeric(Sys.time())
     #   (b) use stop() to throw the problem back to the GUI
     #
 test_static <- future({
-require(OPI)
 source('test_state.r')
 set.seed(as.numeric(rev(as.character(static_last_time_called))))
 
@@ -150,5 +149,6 @@ globals=list(
     vf=vf, 
     ShinySender=ShinySender, 
     ShinyReceiver=ShinyReceiver, 
-    static_last_time_called=static_last_time_called)
+    static_last_time_called=static_last_time_called),
+packages = "OPI",
 )
