@@ -22,7 +22,7 @@ static_last_time_called <- as.numeric(Sys.time())
     # Beginning of the test logic - note globals at the end.
     #
     # If there is an error condition raised in the test
-    #   (a) send a MSG_TEST_ERROR on ShinyReceiver and 
+    #   (a) send a g_msg$test_error on ShinyReceiver and 
     #   (b) use stop() to throw the problem back to the GUI
     #
 test_static <- future({
@@ -32,43 +32,47 @@ set.seed(as.numeric(rev(as.character(static_last_time_called))))
     # Check for any particular variables needed not listed in globals.
 for (cc in c("X", "Y", "NP", "Done")) {
     if (! cc %in% colnames(vf)) {
-        ShinyReceiver$push(MSG_TEST_ERROR, sprintf("Missing $s in vf",v))
+        ShinyReceiver$push(g_msg$test_error, sprintf("Missing $s in vf",v))
         stop(sprintf("Missing $s in vf",v))
     }
 }
 if (substr(machine,1,3) == "Sim" && ! "TT" %in% colnames(vf)) {
-    ShinyReceiver$push(MSG_TEST_ERROR, "Missing TT in vf")
+    ShinyReceiver$push(g_msg$test_error, "Missing TT in vf")
     stop("Missing TT in vf")
 }
 
     # Get any information needed from the GUI queue not passed as 
     # globals (ie can change during the test)
-speed <- SPEEDS[[1]]
-get_from_txtq(list(c("speed", MSG_SPEED)), ShinySender, block=FALSE)
+speed <- g_speeds[[1]]
+s <- ShinySender$get(g_msg$speed, block=FALSE)
+if (!is.na(s))
+    speed <- s
 
     # Setup OPI in the usual way
 if (!chooseOPI(machine)) {
-    ShinyReceiver$push(MSG_TEST_ERROR, "Bad machine in chooseOPI")
+    ShinyReceiver$push(g_msg$test_error, "Bad machine in chooseOPI")
     stop('Invalide machine for OPI')
 }
 
     # opiInitialise in the usual way, signalling start and end with 
-    # MSG_INITIALISE_STATE messages on ShinyReceiver so GUI knows 
+    # g_msg$initialise_state messages on ShinyReceiver so GUI knows 
     # what is happening.
-ShinyReceiver$push(MSG_INITIALISE_STATE, RUN_STOPPED)
+ShinyReceiver$push(g_msg$initialise_state, g_state$stopped)
 res <- opiInitialise()
 if (!is.null(res)) {
-    ShinyReceiver$push(MSG_TEST_ERROR, "opiInitialise failed")
+    ShinyReceiver$push(g_msg$test_error, "opiInitialise failed")
     stop('opiInitialise failed')
 }
-ShinyReceiver$push(MSG_INITIALISE_STATE, RUN_WAIT_FOR_INIT)
+ShinyReceiver$push(g_msg$initialise_state, g_state$wait_for_init)
 
     # Test needs to wait for GUI to give the green light as a message on ShinySender.
     # Note that we could get a variety of states from GUI
     # due to pausing, running or cancelling.
-running_state <- RUN_WAIT_FOR_INIT
-while (running_state == RUN_WAIT_FOR_INIT) {
-    get_from_txtq(list(c("running_state", MSG_STATE)), ShinySender, block=FALSE)
+running_state <- g_state$wait_for_init
+while (running_state == g_state$wait_for_init) {
+    temp <- ShinySender$get(g_msg$state, block = FALSE)
+    if (!is.na(temp))
+        running_state <- temp
     Sys.sleep(0.5)  # don't forget to sleep so GUI gets some CPU time
 }
 
@@ -88,19 +92,19 @@ makeStimHelper <- function(x, y) {  # returns a function of (db,n)
     # Begin main test loop
     #
     # Note that in addition to the test logic (in this case length(unfinished) > 0) 
-    # we need to check that the GUI is not in RUN_STOPPED or RUN_FINALISING states.
+    # we need to check that the GUI is not in g_state$stopped or g_state$finalising states.
     # If it is, it means that the test has been cancelled from the GUI.
-    # We also need to not present anything while the GUI is in a RUN_PAUSE state.
-    # As such, we need to check the ShinySender queue for MSG_STATE quite often.
+    # We also need to not present anything while the GUI is in a g_state$pause state.
+    # As such, we need to check the ShinySender queue for g_msg$state quite often.
     #
 unfinished <- as.list(1:nrow(vf))
 start_time <- Sys.time()
 start_pres_time <- startTime <- Sys.time()
-while (running_state != RUN_STOPPED && running_state != RUN_FINALISING && length(unfinished) > 0) {
-    if (speed == SPEEDS[[1]]) Sys.sleep(0.1)
-    if (speed == SPEEDS[[2]]) Sys.sleep(1.0)
+while (running_state != g_state$stopped && running_state != g_state$finalising && length(unfinished) > 0) {
+    if (speed == g_speeds[[1]]) Sys.sleep(0.1)
+    if (speed == g_speeds[[2]]) Sys.sleep(1.0)
 
-    if (running_state == RUN_RUNNING) {  # Could be paused, remember...
+    if (running_state == g_state$running) {  # Could be paused, remember...
         loc_i <- sample.int(length(unfinished), 1)
         loc <- unfinished[[loc_i]]
 
@@ -109,7 +113,7 @@ while (running_state != RUN_STOPPED && running_state != RUN_FINALISING && length
         r <- opiPresent(stim=makeStimHelper(xy[1], xy[2])(val,1), tt=vf$TT[loc], fpr=0.1, fnr=0.03)
 
             # Tell the GUI you presented (not essential if the GUI doesn't need to know)
-        ShinyReceiver$push(MSG_PRESENTATION, paste(xy[1], xy[2], val, r$seen))
+        ShinyReceiver$push(g_msg$presentation, paste(xy[1], xy[2], val, r$seen))
 
         vf$NP[loc] <- vf$NP[loc] + 1
 
@@ -118,37 +122,31 @@ while (running_state != RUN_STOPPED && running_state != RUN_FINALISING && length
             vf$Done[loc] <- TRUE
             vf$Value[loc] <- 666
                 # Tell the GUI you finished this location. 
-                # This is essential as the number of MSG_LOC_FINISHED messages
-                # needs to match the number sent back in MSG_TEST_FINISHED.
-            ShinyReceiver$push(MSG_LOC_FINISHED, paste(xy[1], xy[2], vf$NP[loc], vf$Value[loc]))
+                # This is essential as the number of g_msg$loc_finished messages
+                # needs to match the number sent back in g_msg$test_finished.
+            ShinyReceiver$push(g_msg$loc_finished, paste(xy[1], xy[2], vf$NP[loc], vf$Value[loc]))
         }
     } else {
         Sys.sleep(0.5)  # Wait for pause to be over...
     }
 
         # Check the ShinyReceiver queue for paramters we might need and the GUI running state.
-    get_from_txtq(list(
-        c("running_state", MSG_STATE),   # Could be canceled or paused
-        c("speed", MSG_SPEED)            # Other parameters that might have changed
-    ), ShinySender, block=FALSE)
+    s <- ShinySender$get(g_msg$state, block = FALSE) # Could be cancelled or paused
+    if (!is.na(s))
+        running_state <- s
+    s <- ShinySender$get(g_msg$speed, block = FALSE)  # Other parameters that might have changed
+    if (!is.na(s))
+        speed <- s
 }
 
     # Always send this at the end of the test, even if the message is "0"
     # The GUI will not finish the test until it has got at least this many
-    # MSG_LOC_FINISHED messages on ShinyReceiver.
-ShinyReceiver$push(MSG_TEST_FINISHED, as.character(sum(vf$Done))) 
+    # g_msg$loc_finished messages on ShinyReceiver.
+ShinyReceiver$push(g_msg$test_finished, as.character(sum(vf$Done))) 
 
 
 }, 
 seed=TRUE,  # doesn't seem to work, hence my static_last_time_called thingie
-globals=list(
-    machine=machine, 
-    size=size, 
-    fpr=fpr, 
-    fnr=fnr, 
-    vf=vf, 
-    ShinySender=ShinySender, 
-    ShinyReceiver=ShinyReceiver, 
-    static_last_time_called=static_last_time_called),
+globals= for_the_test,
 packages = "OPI",
 )

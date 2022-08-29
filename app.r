@@ -3,20 +3,20 @@
 #
 # Assumes an OPI test will step through the 4 stages in the first row.
 # The GUI maintains has the three extra states 
-#   RUN_STOPPED  - the test has not begun
-#   RUN_FINALISING - the test has finished but there is some tidying up to do
-#   RUN_SHOWING_ERROR - the test threw an error and I am waiting for User to click Ok
+#   g_state$stopped  - the test has not begun
+#   g_state$finalising - the test has finished but there is some tidying up to do
+#   g_state$showing_error - the test threw an error and I am waiting for User to click Ok
 #
 #
-#                      +-----Cancel---->----+---Cancel--->-+----Cancel---->---+
-#                      ^                    ^              ^                  |
-#                      |                    |              |                  V
-#             +-> RUN_WAIT_FOR_INIT -> RUN_START_PAUSE -> RUN_RUNNING -> RUN_PAUSE 
-#            /               |         /                  /|  ^            |  |
-#           /                V        V                  / |  |            V  |
-# RUN_STOPPED<-------- RUN_SHOWING_ERROR<---------------+  |  +-<-Continue-+  |
-#      |                                                   V                  |
-#      +------<------test all finished-----<-------- RUN_FINALISING <--Cancel-+
+#                          +-----Cancel---->---------+---Cancel--->--------+----Cancel------- -->---+
+#                          ^                         ^                     ^                        |
+#                          |                         |                     |                        V
+#             +-> g_state$wait_for_init -> g_state$start_pause -> g_state$running -> g_state$pause  |
+#            /               \                          /                /|  ^               |      |
+#           /                 V                        V                / |  |               V      |
+# g_state$stopped <------- g_state$showing_error ----------<-----------+  |  +--<-Continue---+      |
+#      |                                                                  V                         |
+#      +------<------test all finished-----------------<-------- g_state$finalising <----Cancel-----+
 #      
 #
 # Andrew Turpin
@@ -37,8 +37,11 @@ kill_state <- NULL
 # plotting area
 VF_SIZE <- 500 # pixels
 
-ShinySender <- txtq(tempfile())    # Messages from GUI to test
-ShinyReceiver <- txtq(tempfile())  # Messages from test to GUI
+source("comm_queue.r")
+
+shiny_sender <- CommQueue$new("GUI Sender", FALSE) # Messages from GUI to test
+shiny_receiver <- CommQueue$new("GUI Receiver", FALSE)   # Messages from test to GUI
+
 
 #
 # The UI is a simple sidebarLayout. Add whatever you like!
@@ -53,20 +56,21 @@ ui <- fluidPage(
     sidebarLayout(
         sidebarPanel(
             fluidRow(
-                column(4, sliderTextInput("speed", "Test Speed:", choices=SPEEDS))
+                column(4, sliderTextInput("speed", "Test Speed:", choices = g_speeds))
             ),
 
-            radioButtons('test_choice', "Test Choice", width = "100%", choices = c("Center", "Periph"), inline=TRUE),
+            radioButtons('test_choice', "Test Choice", width = "100%", choices = c("Center", "Periph"), inline = TRUE),
 
             fluidRow(
                 column(8, actionButton('run', 'Initialise machine')),
                 column(4, actionButton('kill', 'Cancel Test', class="cancel-button"))
             ),
 
-            htmlOutput("status")
-        ),
+            htmlOutput("status"),
+        width = 6),
         mainPanel(
-            plotOutput("plotArea")
+            plotOutput("plotArea"),
+        width = 6
         )
     )## sidebarLayout
 )## fluidPage
@@ -76,20 +80,20 @@ server <- function(input, output, session) {
     rvs <- reactiveValues()
 
         # The values that will be plotted in the GUI and probably 
-        # altered by messages coming in on the ShinyReceiver queue
-    rvs$vf=data.frame(              # Note that the test checks for some of these columns
-        X=0, Y=0,
-        Value=NA,
-        NP=0,
-        Done=FALSE
+        # altered by messages coming in on the shiny_receiver queue
+    rvs$vf <- data.frame(              # Note that the test checks for some of these columns
+        X = 0, Y = 0,
+        Value = NA,
+        NP = 0,
+        Done = FALSE
     )
     rvs$start_time <- 0
 
-    rvs$run_state <- RUN_STOPPED    # Start at the first state
+    rvs$run_state <- g_state$stopped    # Start at the first state
 
     #observe({
     #    print("--------------DEBUG----------------")
-    #    print(ShinyReceiver$list())
+    #    print(shiny_receiver$rep())
     #    print(paste("State: ", rvs$run_state))
     #    invalidateLater(500)
     #}) 
@@ -99,12 +103,12 @@ server <- function(input, output, session) {
     # hence the if statements on run_state.
     #
     observeEvent(input$run,{
-        if (rvs$run_state == RUN_STOPPED) {  # start the test
-            ShinyReceiver$reset()
-            ShinySender$reset()
+        if (rvs$run_state == g_state$stopped) {  # start the test
+            shiny_receiver$reset()
+            shiny_sender$reset()
 
                 # Send any parameters that might change during the test
-            ShinySender$push(title=MSG_SPEED, input$speed)
+            shiny_sender$push(title=g_msg$speed, input$speed)
 
                 # Reset local rvs$vf for a new test
             rvs$vf$Done <- FALSE
@@ -113,27 +117,31 @@ server <- function(input, output, session) {
             rvs$number_expected <- Inf  # the number of thresholds to wait for from test
 
                 # Set up variables that the test is expecting to exist in its 'globals' list
-            vf <- isolate(rvs$vf)
-            vf$TT<-30
-            machine <- "SimHenson"
-            size <- 0.43
-            fpr <- 0.01
-            fnr <- 0.01
+            for_the_test <- list(
+                static_last_time_called = as.numeric(Sys.time()),
+                vf = cbind(isolate(rvs$vf), TT = 35),
+                machine = "SimHenson",
+                size = 0.43,
+                fpr = 0.01,
+                fnr = 0.01,
+                ShinySender = shiny_sender, 
+                ShinyReceiver = shiny_receiver 
+            )
             source('static.r', local=TRUE)  # defines test_static <- future(... )
 
-            rvs$run_state <- RUN_WAIT_FOR_INIT
+            rvs$run_state <- g_state$wait_for_init
             then(test_static,
-                onFulfilled = function(x) rvs$run_state <- RUN_FINALISING,
-                onRejected = function(err) rvs$run_state <- RUN_SHOWING_ERROR
+                onFulfilled = function(x) rvs$run_state <- g_state$finalising,
+                onRejected = function(err) rvs$run_state <- g_state$showing_error
             )
             return(NULL)  # is this needed?
-        } else if (rvs$run_state == RUN_START_PAUSE) { # wait for init to finish
-            rvs$run_state <- RUN_RUNNING
+        } else if (rvs$run_state == g_state$start_pause) { # wait for init to finish
+            rvs$run_state <- g_state$running
             rvs$start_time <- Sys.time()  # for elapsed time. test start time set in test future.
-        } else if (rvs$run_state == RUN_RUNNING) { # pause
-            rvs$run_state <- RUN_PAUSE
-        } else if (rvs$run_state == RUN_PAUSE) { # continue
-            rvs$run_state <- RUN_RUNNING
+        } else if (rvs$run_state == g_state$running) { # pause
+            rvs$run_state <- g_state$pause
+        } else if (rvs$run_state == g_state$pause) { # continue
+            rvs$run_state <- g_state$running
         }
     })
 
@@ -141,39 +149,38 @@ server <- function(input, output, session) {
     # When the RUN state changes, send it off to test and alter GUI as appropriate
     #
     observeEvent(rvs$run_state, {
-        ShinySender$push(title=MSG_STATE, rvs$run_state)
+        shiny_sender$push(title=g_msg$state, rvs$run_state)
 
-        if (rvs$run_state == RUN_STOPPED)       updateActionButton(session, "run", "Initialise machine")
-        if (rvs$run_state == RUN_WAIT_FOR_INIT) updateActionButton(session, "run", "Waiting...")
-        if (rvs$run_state == RUN_START_PAUSE)   updateActionButton(session, "run", "Start test")
-        if (rvs$run_state == RUN_RUNNING)       updateActionButton(session, "run", "Pause Test")
-        if (rvs$run_state == RUN_PAUSE)         updateActionButton(session, "run", "Continue Test")
-        if (rvs$run_state == RUN_FINALISING)    updateActionButton(session, "run", "Waiting...")
+        if (rvs$run_state == g_state$stopped)       updateActionButton(session, "run", "Initialise machine")
+        if (rvs$run_state == g_state$wait_for_init) updateActionButton(session, "run", "Waiting...")
+        if (rvs$run_state == g_state$start_pause)   updateActionButton(session, "run", "Start test")
+        if (rvs$run_state == g_state$running)       updateActionButton(session, "run", "Pause Test")
+        if (rvs$run_state == g_state$pause)         updateActionButton(session, "run", "Continue Test")
+        if (rvs$run_state == g_state$finalising)    updateActionButton(session, "run", "Waiting...")
 
-        if (rvs$run_state == RUN_STOPPED)       rvs$status <- "Ready to initialise"
-        if (rvs$run_state == RUN_WAIT_FOR_INIT) rvs$status <- "Initialising machine, please wait"
-        if (rvs$run_state == RUN_START_PAUSE)   rvs$status <- "Ready to start test"
-        if (rvs$run_state == RUN_RUNNING)       rvs$status <- "Running"
-        if (rvs$run_state == RUN_PAUSE)         rvs$status <- "Paused"
-        if (rvs$run_state == RUN_FINALISING)    rvs$status <- "Finalising results"
+        if (rvs$run_state == g_state$stopped)       rvs$status <- "Ready to initialise"
+        if (rvs$run_state == g_state$wait_for_init) rvs$status <- "Initialising machine, please wait"
+        if (rvs$run_state == g_state$start_pause)   rvs$status <- "Ready to start test"
+        if (rvs$run_state == g_state$running)       rvs$status <- "Running"
+        if (rvs$run_state == g_state$pause)         rvs$status <- "Paused"
+        if (rvs$run_state == g_state$finalising)    rvs$status <- "Finalising results"
 
-        if (rvs$run_state == RUN_STOPPED)       enable("test_choice")
-        if (rvs$run_state == RUN_WAIT_FOR_INIT) enable("test_choice")
-        if (rvs$run_state == RUN_START_PAUSE)   enable("test_choice")
-        if (rvs$run_state == RUN_RUNNING)       disable("test_choice")
-        if (rvs$run_state == RUN_PAUSE)         disable("test_choice")
-        if (rvs$run_state == RUN_FINALISING)    disable("test_choice")
+        if (rvs$run_state == g_state$stopped)       enable("test_choice")
+        if (rvs$run_state == g_state$wait_for_init) enable("test_choice")
+        if (rvs$run_state == g_state$start_pause)   enable("test_choice")
+        if (rvs$run_state == g_state$running)       disable("test_choice")
+        if (rvs$run_state == g_state$pause)         disable("test_choice")
+        if (rvs$run_state == g_state$finalising)    disable("test_choice")
     })
 
     #
-    # When run_state is not RUN_FINALISING or RUN_STOPPED
-    # check for errors coming from the test on ShinyReceiver
+    # When run_state is not g_state$finalising or g_state$stopped
+    # check for errors coming from the test on shiny_receiver
     #
     observe({
-        if (rvs$run_state != RUN_STOPPED && rvs$run_state != RUN_FINALISING) {
-            err <- ""
-            get_from_txtq(list(c("err", MSG_TEST_ERROR)), ShinyReceiver, block=FALSE)
-            if (nchar(err) > 0) {
+        if (rvs$run_state != g_state$stopped && rvs$run_state != g_state$finalising) {
+            err <- shiny_receiver$get(g_msg$test_error, block=FALSE)
+            if (!is.na(err)) {
                 showModal(modalDialog(
                     paste("Test Error.", err),
                     footer = tagList(actionButton("okError", "Ok"))
@@ -184,18 +191,17 @@ server <- function(input, output, session) {
             }
         }
     })
-    observeEvent(input$okError, { rvs$run_state <- RUN_STOPPED ; removeModal() })
+    observeEvent(input$okError, { rvs$run_state <- g_state$stopped ; removeModal() })
 
     #
-    # When run_state is RUN_WAIT_FOR_INIT check ShinyReceiver queue 
-    # for MSG_INITIALISE_STATE, "1" message to show opiInitialise is done
+    # When run_state is g_state$wait_for_init check shiny_receiver queue 
+    # for g_msg$initialise_state, "1" message to show opiInitialise is done
     #
     observe({
-        if (rvs$run_state == RUN_WAIT_FOR_INIT) {
-            temp <- ""
-            get_from_txtq(list(c('temp', MSG_INITIALISE_STATE)), ShinyReceiver, block=FALSE)
-            if (nchar(temp) > 0 && temp == "1") {
-                rvs$run_state <- RUN_START_PAUSE
+        if (rvs$run_state == g_state$wait_for_init) {
+            temp <- shiny_receiver$get(g_msg$initialise_state, block=FALSE)
+            if (!is.na(temp) && temp == "1") {
+                rvs$run_state <- g_state$start_pause
             } else {
                 invalidateLater(200) # keep looking
             }
@@ -203,17 +209,14 @@ server <- function(input, output, session) {
     })
 
     #
-    # Utility function to find MSG_PRESENTATION and MSG_LOC_FINISHED
-    # in the ShinyReceiver queue and update rvs$vf appropriately.
+    # Utility function to find g_msg$presentation and g_msg$loc_finished
+    # in the shiny_receiver queue and update rvs$vf appropriately.
     #
     check_for_presentations <- function() {
-        pres <- done <- ""
-        get_from_txtq(list(
-            c("pres", MSG_PRESENTATION),
-            c("done", MSG_LOC_FINISHED)
-        ), ShinyReceiver, block=FALSE)
+        pres <- shiny_receiver$get(g_msg$presentation, block = FALSE)
+        done <- shiny_receiver$get(g_msg$loc_finished, block = FALSE)
         
-        if (nchar(pres) > 0) {
+        if (!is.na(pres) > 0) {
             s <- strsplit(pres, " ")[[1]]
             ii <- which(rvs$vf$X == as.numeric(s[1]) & rvs$vf$Y == as.numeric(s[2]))
             if (!rvs$vf$Done[ii]) {
@@ -222,7 +225,7 @@ server <- function(input, output, session) {
             }
         }
         
-        if (nchar(done) > 0) {
+        if (!is.na(done) > 0) {
             s <- as.numeric(strsplit(done, " ")[[1]])
             ii <- which(rvs$vf$X == s[1] & rvs$vf$Y == s[2])
             rvs$vf$NP[ii]    <- s[3]
@@ -232,48 +235,47 @@ server <- function(input, output, session) {
     }# check_for_presentations()
 
     #
-    # When run_state is RUN_RUNNING or RUN_PAUSE check ShinyReceiver queue 
-    # for any MSG_PRESENTATION or MSG_LOC_FINISHED messages to update rvs$vf
+    # When run_state is g_state$running or g_state$pause check shiny_receiver queue 
+    # for any g_msg$presentation or g_msg$loc_finished messages to update rvs$vf
     #
     observe({
-        if (rvs$run_state == RUN_RUNNING || rvs$run_state == RUN_PAUSE) {
+        if (rvs$run_state == g_state$running || rvs$run_state == g_state$pause) {
             check_for_presentations()
             invalidateLater(200)   # keep looking
         }
     })
 
     #
-    # If we are in RUN_FINALISING then the test is finished, but there might
-    # be messages on ShinyReceiver still to process
-    # Note rvs$number_expected gets set from MSG_TEST_FINISHED.
+    # If we are in g_state$finalising then the test is finished, but there might
+    # be messages on shiny_receiver still to process
+    # Note rvs$number_expected gets set from g_msg$test_finished.
     #
     observe({
-        if (rvs$run_state == RUN_FINALISING) {
+        if (rvs$run_state == g_state$finalising) {
             if (sum(rvs$vf$Done) < rvs$number_expected) {
                 check_for_presentations()
                 
-                temp <- ""
-                get_from_txtq(list(c("temp", MSG_TEST_FINISHED)), ShinyReceiver, block=FALSE)
-                if (nchar(temp) > 0) {
+                temp <- shiny_receiver$get(g_msg$test_finished, block = FALSE)
+                if (!is.na(temp)) {
                     rvs$number_expected <- as.numeric(temp)
                 }
                 invalidateLater(100) # keep looking
             } else {
-                rvs$run_state <- RUN_STOPPED
+                rvs$run_state <- g_state$stopped
             }
         }
     })
 
     #
     # Cancel button - be careful here because test can still run for a while
-    # during the cancel process. Hence we move to RUN_FINALISING and not
-    # RUN_STOPPED. Test will always send back a MSG_TEST_FINISHED if not in error.
+    # during the cancel process. Hence we move to g_state$finalising and not
+    # g_state$stopped. Test will always send back a g_msg$test_finished if not in error.
     #
     observeEvent(input$kill,{
         kill_state <<- isolate(rvs$run_state)  # record where we are 
 
-        if (kill_state != RUN_STOPPED && kill_state != RUN_FINALISING) {
-            rvs$run_state <- RUN_PAUSE
+        if (kill_state != g_state$stopped && kill_state != g_state$finalising) {
+            rvs$run_state <- g_state$pause
             showModal(modalDialog(
                 "Test Paused. Are you sure you want to cancel?" ,
                 footer = tagList(actionButton("confirmCancel", "Yes - Cancel"), 
@@ -281,7 +283,7 @@ server <- function(input, output, session) {
             ))
         }
     })
-    observeEvent(input$confirmCancel,  {rvs$run_state <- RUN_FINALISING; removeModal() })
+    observeEvent(input$confirmCancel,  {rvs$run_state <- g_state$finalising; removeModal() })
     observeEvent(input$notConfirmCanel,{rvs$run_state <- kill_state    ; removeModal() })
 
     #
@@ -319,7 +321,7 @@ server <- function(input, output, session) {
     # Changing css
     #
     output$css_style <- renderUI({
-        if (rvs$run_state == RUN_STOPPED) {
+        if (rvs$run_state == g_state$stopped) {
             tags$head(tags$style(HTML(
                 ".cancel-button { opacity: 0.6; cursor: not-allowed; }"
             )))
@@ -359,9 +361,9 @@ server <- function(input, output, session) {
     #
     # ISI slider
     #
-    observeEvent(input$speed,{ ShinySender$push(MSG_SPEED, input$speed) })
+    observeEvent(input$speed,{ shiny_sender$push(g_msg$speed, input$speed) })
     # stop server
-    onSessionEnded(function() ShinySender$push(MSG_STATE, RUN_STOPPED))
+    onSessionEnded(function() shiny_sender$push(g_msg$state, g_state$stopped))
 }
 
 shinyApp(ui=ui, server = server)
